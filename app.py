@@ -1,4 +1,10 @@
+import streamlit as st  # <--- This must be here!
+import requests
+import pandas as pd
+import plotly.express as px
 
+# This must be the VERY FIRST streamlit command
+st.set_page_config(page_title="Offshore Forensic Audit", page_icon="🕵️", layout="wide")
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Offshore Forensic Audit", page_icon="🕵️", layout="wide")
