@@ -7,34 +7,50 @@ st.title("🕸️ GLEIF Human-Link Resolver")
 target = st.text_input("Search Company", "JPMorgan")
 
 if st.button("🔍 Trace to Human Sources") and target:
-    # 1. Get the LEI Record
+    # GLEIF API search
     url = f"https://api.gleif.org/api/v1/lei-records?filter[fulltext]={target}&page[size]=5"
     res = requests.get(url).json()
     
-    for entity in res.get('data', []):
-        name = entity['attributes']['entity']['legalName']['name']
-        lei = entity['id']
-        reg_authority = entity['attributes']['registration']['registrationAuthorityEntityID']
+    entities = res.get('data', [])
+    if not entities:
+        st.warning("No entities found.")
+    
+    for entity in entities:
+        attr = entity.get('attributes', {})
+        entity_name = attr.get('entity', {}).get('legalName', {}).get('name', "Unknown Name")
+        lei = entity.get('id')
         
-        # 2. Check for the 'Human Owner' Flag
-        rel = entity.get('relationships', {}).get('direct-parent', {})
-        exception = rel.get('links', {}).get('reporting-exception', "None")
+        # --- SAFE EXTRACTION OF REGISTRATION DATA ---
+        reg = attr.get('registration', {})
+        # The key path is: attributes -> registration -> registrationAuthorityEntityID
+        reg_auth_id = reg.get('registrationAuthorityID', "N/A")
+        reg_entity_id = reg.get('registrationAuthorityEntityID', "N/A")
         
-        st.subheader(f"🏢 {name}")
+        st.subheader(f"🏢 {entity_name}")
         st.write(f"**LEI:** `{lei}`")
         
         col1, col2 = st.columns(2)
+        
         with col1:
-            if "reporting-exception" in str(exception):
-                st.error("👤 **Owned by Natural Persons** (Hidden in GLEIF)")
+            # Check for ownership type
+            rel = entity.get('relationships', {}).get('direct-parent', {})
+            if 'reporting-exception' in str(rel.get('links', {})):
+                st.error("👤 **Owned by Natural Persons**")
             else:
-                st.success("🏢 **Owned by Corporate Parent**")
+                st.success("🏢 **Corporate Parent Path Available**")
         
         with col2:
-            # This is your 'Jump' point to find the actual names
-            st.info(f"📍 **Local Registry ID:** `{reg_authority}`")
-            # We can build a dynamic link based on the authority
-            if "RA000602" in entity['attributes']['registration']['registrationAuthorityID']: # UK
-                st.markdown(f"[View Directors on UK Register](https://find-and-update.company-information.service.gov.uk/company/{reg_authority})")
+            st.info(f"📍 **Registry Code:** `{reg_auth_id}`")
+            if reg_entity_id != "N/A":
+                st.write(f"**Local ID:** `{reg_entity_id}`")
+                
+                # Dynamic Link Logic for UK (RA000602)
+                if reg_auth_id == "RA000602":
+                    st.markdown(f"🔗 [View UK Directors](https://find-and-update.company-information.service.gov.uk/company/{reg_entity_id})")
+                # Dynamic Link Logic for Luxembourg (RA000435)
+                elif reg_auth_id == "RA000435":
+                    st.markdown(f"🔗 [Search Luxembourg RBE](https://www.lbr.lu/)")
+            else:
+                st.write("No Local Registry ID found in GLEIF record.")
 
         st.divider()
