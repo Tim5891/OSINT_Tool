@@ -1,76 +1,90 @@
 import streamlit as st
 import requests
 import pandas as pd
-import plotly.express as px
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Shadow Network Investigator", page_icon="🕵️", layout="wide")
+st.set_page_config(page_title="Corporate Spiderweb", page_icon="🕸️", layout="wide")
 
-st.title("🕵️ Shadow Network Investigator")
-st.markdown("Search for individuals, companies, or keywords across global registries.")
+st.title("🕸️ Corporate Spiderweb Investigator")
+st.markdown("Trace global ownership chains and unmask parent companies.")
 
-# --- SIDEBAR CONTROLS ---
-st.sidebar.header("Investigation Scope")
-search_mode = st.sidebar.selectbox("Search Mode", ["Target Search (Global)", "Jurisdiction Audit (By Country)"])
+# --- DATA: ISO COUNTRY CODES (Abbreviated List) ---
+COUNTRIES = {"Any": None, "Cayman Islands": "KY", "Luxembourg": "LU", "British Virgin Islands": "VG", "USA": "US", "UK": "GB", "Panama": "PA"}
 
-if search_mode == "Target Search (Global)":
-    query = st.sidebar.text_input("Enter Name/Keyword", placeholder="e.g., Alex Singer or Sahara Foundation")
-    country_code = None
-else:
-    country_code = st.sidebar.text_input("Country Code", value="KY").upper()
-    query = None
+# --- SIDEBAR: ADVANCED SEARCH ---
+st.sidebar.header("🔍 Search Parameters")
+search_term = st.sidebar.text_input("Entity Name or Alias", placeholder="e.g., Nicholas Gold")
+selected_country = st.sidebar.selectbox("Filter by Country (Optional)", list(COUNTRIES.keys()))
+deep_scan = st.sidebar.checkbox("Deep Scan (Follow Parent Chains)", value=True)
 
-num_records = st.sidebar.slider("Records to Fetch", 5, 100, 20)
+# --- API HELPERS ---
+def get_entity_name_by_lei(lei):
+    """Quick lookup to turn an LEI into a human-readable name."""
+    if not lei: return "Unknown"
+    url = f"https://api.gleif.org/api/v1/lei-records/{lei}"
+    try:
+        res = requests.get(url).json()
+        return res['data']['attributes']['entity']['legalName']['name']
+    except:
+        return lei # Fallback to LEI if lookup fails
 
-# --- API LOGIC ---
-@st.cache_data(ttl=3600)
-def fetch_lei_data(search_query=None, country=None, limit=20):
-    base_url = "https://api.gleif.org/api/v1/lei-records"
-    params = {'page[size]': limit}
-    
-    if search_query:
-        params['filter[fulltext]'] = search_query
-    if country:
-        params['filter[entity.legalAddress.country]'] = country
-        
-    response = requests.get(base_url, params=params)
-    return response.json().get('data', []) if response.status_code == 200 else None
-
-def get_exception_reason(p_data):
+def get_secrecy_reason(p_data):
+    """Extract why a parent is hidden."""
     exception_url = p_data.get('links', {}).get('reporting-exception')
-    if not exception_url: return "DISCLOSED"
+    if not exception_url: return None
     try:
         ex_res = requests.get(exception_url).json()
-        return ex_res['data']['attributes'].get('exceptionReason', "UNKNOWN")
-    except: return "LOOKUP_ERROR"
+        return ex_res['data']['attributes'].get('exceptionReason', "HIDDEN")
+    except: return "HIDDEN"
 
-# --- EXECUTION ---
-if st.sidebar.button("🔍 Run Search"):
-    with st.spinner("Accessing Global LEI Index..."):
-        data = fetch_lei_data(search_query=query, country=country_code, limit=num_records)
+# --- MAIN INVESTIGATION ---
+if st.sidebar.button("🕵️ Start Investigation") and search_term:
+    with st.spinner(f"Tracing connections for '{search_term}'..."):
+        # 1. Primary Search
+        base_url = "https://api.gleif.org/api/v1/lei-records"
+        params = {'filter[fulltext]': search_term, 'page[size]': 15}
         
-        if data:
-            results = []
-            for record in data:
-                attr = record['attributes']
-                rel = record.get('relationships', {})
+        if COUNTRIES[selected_country]:
+            params['filter[entity.legalAddress.country]'] = COUNTRIES[selected_country]
+            
+        res = requests.get(base_url, params=params)
+        
+        if res.status_code == 200:
+            entries = res.json().get('data', [])
+            report_data = []
+
+            for entry in entries:
+                name = entry['attributes']['entity']['legalName']['name']
+                lei = entry['id']
+                rel = entry.get('relationships', {})
                 
-                results.append({
-                    "Entity Name": attr['entity']['legalName']['name'],
-                    "Jurisdiction": attr['entity']['legalAddress']['country'],
-                    "Direct Parent": get_exception_reason(rel.get('direct-parent', {})),
-                    "Ultimate Parent": get_exception_reason(rel.get('ultimate-parent', {})),
-                    "LEI": record['id']
+                # Resolve Direct Parent
+                dp_lei = rel.get('direct-parent', {}).get('data', {}).get('id')
+                if dp_lei:
+                    dp_display = get_entity_name_by_lei(dp_lei) if deep_scan else dp_lei
+                else:
+                    dp_display = f"⚠️ {get_secrecy_reason(rel.get('direct-parent', {}))}"
+
+                # Resolve Ultimate Parent
+                up_lei = rel.get('ultimate-parent', {}).get('data', {}).get('id')
+                if up_lei:
+                    up_display = get_entity_name_by_lei(up_lei) if deep_scan else up_lei
+                else:
+                    up_display = f"⚠️ {get_secrecy_reason(rel.get('ultimate-parent', {}))}"
+
+                report_data.append({
+                    "Target Entity": name,
+                    "Country": entry['attributes']['entity']['legalAddress']['country'],
+                    "Direct Parent": dp_display,
+                    "Ultimate Parent": up_display,
+                    "LEI": lei
                 })
+
+            df = pd.DataFrame(report_data)
+            st.subheader(f"Ownership Web for '{search_term}'")
+            st.table(df) # Using table for a grittier 'report' look
             
-            df = pd.DataFrame(results)
-            
-            # --- DISPLAY ---
-            st.subheader(f"Results for: {query or country_code}")
-            st.dataframe(df, use_container_width=True)
-            
-            # Pie Chart of Secrecy Reasons
-            fig = px.pie(df, names='Direct Parent', title="Ownership Transparency Breakdown", hole=0.4)
-            st.plotly_chart(fig)
+            # Gritty Analysis Note
+            st.info("💡 **Investigative Tip:** If the Direct and Ultimate parents are different, you've found a middle-tier holding company. If they are both marked 'NATURAL_PERSONS', the trail ends with an individual owner.")
         else:
-            st.error("No matches found. Try broadening your search term.")
+            st.error("No data found or API limit reached.")
